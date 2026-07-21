@@ -9,7 +9,7 @@ BARK_URL = f"https://api.day.app/{BARK_KEY}/"
 
 @app.route("/")
 def home():
-    return "Bark Bot is running!"
+    return "Bark Bot is running! 你的AI助手薄销已上线。"
 
 @app.route("/send")
 def send():
@@ -23,4 +23,5 @@ def send():
         return f"发送失败: {e}"
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8080)
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", port=port)
