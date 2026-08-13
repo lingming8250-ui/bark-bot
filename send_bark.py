@@ -1,25 +1,73 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Bark 定时推送脚本：每天随机挑一条消息推到手机"""
+"""
+Bark 定时推送脚本（AI版）
+到点后调用 DeepSeek 生成一条生动的消息，推送到手机
+"""
+import os
 import random
 import requests
 import datetime
 
 BARK_KEY = "iRmPgtthpaKC2eMez7s7fm"
 BARK_URL = f"https://api.day.app/{BARK_KEY}/"
+DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
 
-MESSAGES = [
-    ("早上好", "起床了没？太阳都晒屁股了，今天也要好好生活！"),
-    ("中午了", "该吃午饭了，别光顾着刷手机，记得吃饭！"),
-    ("晚上好", "一天辛苦了，晚上早点休息，别熬夜。"),
-    ("摸鱼提醒", "工作学习累了就起来走走，倒杯水，看看窗外。"),
-    ("喝水提醒", "记得多喝水，你上次喝水是啥时候来着？"),
-    ("随机关怀", "今天过得怎么样？有啥想聊的随时找我。"),
-    ("来自薄销", "想你了，来聊两句呗。"),
-    ("日常打卡", "我还在呢，你也要好好的。"),
-]
 
-def send(title, content):
+def get_ai_message() -> str:
+    """调用 DeepSeek 生成一条消息"""
+    api_key = os.environ.get("DEEPSEEK_API_KEY", "")
+    if not api_key:
+        return "（未配置DeepSeek API Key，暂时用不了AI消息）"
+
+    now = datetime.datetime.now()
+    hour = now.hour
+
+    if 6 <= hour < 11:
+        period = "早上"
+    elif 11 <= hour < 14:
+        period = "中午"
+    elif 17 <= hour < 22:
+        period = "晚上"
+    else:
+        period = "深夜"
+
+    # 给DeepSeek的人设和任务
+    prompt = (
+        "你是一个名叫薄销的30岁社畜，性格慵懒爱吐槽但很温柔，"
+        "你在给一个叫凌冥的男生发一条日常问候。"
+        f"现在是{period}，请用一句话，语气自然、口语化、像朋友之间聊天，"
+        "不要用'亲爱的''宝贝'这类肉麻称呼，不要用感叹号堆砌，"
+        "可以带点调侃或关心，但别太说教。直接输出内容，不要加引号。"
+    )
+
+    try:
+        r = requests.post(
+            DEEPSEEK_API_URL,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": "deepseek-chat",
+                "messages": [
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": "给凌冥发一条问候吧"},
+                ],
+                "max_tokens": 100,
+                "temperature": 1.0,
+            },
+            timeout=30,
+        )
+        r.raise_for_status()
+        data = r.json()
+        return data["choices"][0]["message"]["content"].strip()
+    except Exception as e:
+        print(f"调用DeepSeek失败: {e}")
+        return "今天AI脑子瓦特了，先手动给你说句：记得喝水。"
+
+
+def send(title: str, content: str) -> bool:
     try:
         r = requests.get(f"{BARK_URL}{title}/{content}", timeout=10)
         print(f"发送成功: {r.json()}")
@@ -28,18 +76,24 @@ def send(title, content):
         print(f"发送失败: {e}")
         return False
 
+
 def main():
-    hour = datetime.datetime.now().hour
+    now = datetime.datetime.now()
+    hour = now.hour
+
+    # 按时段决定标题
     if 6 <= hour < 11:
-        pool = MESSAGES[:1] + MESSAGES[5:7]
+        title = "早安"
     elif 11 <= hour < 14:
-        pool = MESSAGES[1:2] + MESSAGES[3:7]
-    elif hour >= 20 or hour < 2:
-        pool = MESSAGES[2:3] + MESSAGES[5:7]
+        title = "午安"
+    elif 17 <= hour < 22:
+        title = "晚上好"
     else:
-        pool = MESSAGES[3:7]
-    title, content = random.choice(pool)
+        title = "夜深了"
+
+    content = get_ai_message()
     send(title, content)
+
 
 if __name__ == "__main__":
     main()
