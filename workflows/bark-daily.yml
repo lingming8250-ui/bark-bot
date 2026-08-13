@@ -1,0 +1,26 @@
+name: Bark 定时推送
+
+on:
+  schedule:
+    - cron: '0 0 * * *'
+    - cron: '0 4 * * *'
+    - cron: '0 12 * * *'
+  workflow_dispatch:
+
+jobs:
+  send-bark:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 拉取代码
+        uses: actions/checkout@v4
+
+      - name: 安装Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 安装依赖
+        run: pip install requests
+
+      - name: 发送Bark推送
+        run: python send_bark.py
