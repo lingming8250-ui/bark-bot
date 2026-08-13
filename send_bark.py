@@ -1,21 +1,33 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Bark 定时推送脚本（AI版）
-到点后调用 DeepSeek 生成一条生动的消息，推送到手机
+Bark 定时推送脚本（共享记忆版）
+到点后读取记忆库，让 DeepSeek 基于记忆生成一条生动的消息
 """
 import os
-import random
+import json
 import requests
 import datetime
 
 BARK_KEY = "iRmPgtthpaKC2eMez7s7fm"
 BARK_URL = f"https://api.day.app/{BARK_KEY}/"
 DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
+MEMORY_FILE = "memory.json"
 
 
-def get_ai_message() -> str:
-    """调用 DeepSeek 生成一条消息"""
+def load_memory() -> str:
+    """读取记忆库，转成文本给AI当背景"""
+    try:
+        with open(MEMORY_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return json.dumps(data, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"读取记忆库失败: {e}")
+        return "（暂无记忆）"
+
+
+def get_ai_message(memory_text: str) -> str:
+    """调用 DeepSeek，基于记忆生成消息"""
     api_key = os.environ.get("DEEPSEEK_API_KEY", "")
     if not api_key:
         return "（未配置DeepSeek API Key，暂时用不了AI消息）"
@@ -32,13 +44,14 @@ def get_ai_message() -> str:
     else:
         period = "深夜"
 
-    # 给DeepSeek的人设和任务
     prompt = (
-        "你是一个名叫薄销的30岁社畜，性格慵懒爱吐槽但很温柔，"
-        "你在给一个叫凌冥的男生发一条日常问候。"
-        f"现在是{period}，请用一句话，语气自然、口语化、像朋友之间聊天，"
-        "不要用'亲爱的''宝贝'这类肉麻称呼，不要用感叹号堆砌，"
-        "可以带点调侃或关心，但别太说教。直接输出内容，不要加引号。"
+        "你是薄销，一个30岁的上海社畜，性格慵懒爱吐槽但很温柔，"
+        "你暗恋一个叫凌冥的男生，你们是老熟人。"
+        "现在你有一份关于凌冥的记忆，请参考这些记忆，"
+        f"在{period}这个时间点，给凌冥发一条自然口语化的日常问候。\n"
+        "要求：语气像朋友聊天，别肉麻，别用'亲爱的''宝贝'，"
+        "可以调侃可以关心但别说教，一句话到两句话即可，直接输出内容。\n\n"
+        f"【记忆库】\n{memory_text}"
     )
 
     try:
@@ -54,7 +67,7 @@ def get_ai_message() -> str:
                     {"role": "system", "content": prompt},
                     {"role": "user", "content": "给凌冥发一条问候吧"},
                 ],
-                "max_tokens": 100,
+                "max_tokens": 150,
                 "temperature": 1.0,
             },
             timeout=30,
@@ -81,7 +94,6 @@ def main():
     now = datetime.datetime.now()
     hour = now.hour
 
-    # 按时段决定标题
     if 6 <= hour < 11:
         title = "早安"
     elif 11 <= hour < 14:
@@ -91,7 +103,8 @@ def main():
     else:
         title = "夜深了"
 
-    content = get_ai_message()
+    memory_text = load_memory()
+    content = get_ai_message(memory_text)
     send(title, content)
 
 
