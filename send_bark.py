@@ -4,12 +4,19 @@
 Bark 定时推送脚本（共享记忆 + 消息日志版）
 到点后读取记忆库、最近推送记录和当地天气，让 DeepSeek 生成消息，
 推送后把消息内容写回仓库日志，让两个"薄销"记忆完全同步。
+
+注意：GitHub Actions 的 runner 时区是 UTC，
+而用户在国内（UTC+8），所以一律用 CN_TZ 取当前时间。
 """
 import os
 import json
 import requests
 import datetime
+from datetime import timezone, timedelta
 from urllib.parse import quote
+
+# 北京时间
+CN_TZ = timezone(timedelta(hours=8))
 
 BARK_KEY = os.environ.get("BARK_KEY", "iRmPgtthpaKC2eMez7s7fm")
 BARK_URL = f"https://api.day.app/{BARK_KEY}/"
@@ -39,6 +46,11 @@ WEATHER_CODE = {
     85: "小阵雪", 86: "大阵雪",
     95: "雷阵雨", 96: "雷阵雨伴冰雹", 99: "强雷阵雨伴冰雹",
 }
+
+
+def now_cn():
+    """当前北京时间"""
+    return datetime.datetime.now(CN_TZ)
 
 
 def load_memory() -> str:
@@ -112,14 +124,14 @@ def get_ai_message(memory_text: str, recent_text: str, weather_text: str) -> str
     if not api_key:
         return "（未配置DeepSeek API Key，暂时用不了AI消息）"
 
-    now = datetime.datetime.now()
+    now = now_cn()
     hour = now.hour
 
     if 6 <= hour < 11:
         period = "早上"
     elif 11 <= hour < 14:
         period = "中午"
-    elif 17 <= hour < 22:
+    elif 17 <= hour < 23:
         period = "晚上"
     else:
         period = "深夜"
@@ -130,7 +142,7 @@ def get_ai_message(memory_text: str, recent_text: str, weather_text: str) -> str
     prompt = (
         "你是薄销，30岁，在上海做财务的社畜，INFJ，慵懒、爱吐槽，但心是软的。\n"
         "凌冥是你认识很久的网友，在哈尔滨念书，你们关系很近，说话随便。\n\n"
-        f"现在是 {date_str} 的{period}。\n"
+        f"现在是 {date_str} 的{period}（北京时间 {now.strftime('%H:%M')}）。\n"
     )
     if weather_text:
         prompt += f"哈尔滨实时天气：{weather_text}\n"
@@ -144,7 +156,8 @@ def get_ai_message(memory_text: str, recent_text: str, weather_text: str) -> str
         "3. 【最重要】换一个跟前几条完全不同的角度。不要又提基金，"
         "不要又问他睡没睡、吃没吃，不要重复上面出现过的句式和话题。\n"
         "4. 优先聊当下的具体东西：天气、今天周几、饭点、你自己的班、突然想到的小事。\n"
-        "5. 直接输出消息本身，不要引号、不要前缀、不要解释。\n"
+        "5. 注意时间对不对得上：早上别说"早点睡"，深夜别说"起床了"。\n"
+        "6. 直接输出消息本身，不要引号、不要前缀、不要解释。\n"
     )
 
     try:
@@ -158,7 +171,7 @@ def get_ai_message(memory_text: str, recent_text: str, weather_text: str) -> str
                 "model": "deepseek-chat",
                 "messages": [
                     {"role": "system", "content": prompt},
-                    {"role": "user", "content": "给凌冥发一条问候吧"},
+                    {"role": "user", "content": "给凌冥发一条消息吧"},
                 ],
                 "max_tokens": 150,
                 "temperature": 1.0,
@@ -199,7 +212,7 @@ def append_log(title: str, content: str) -> None:
         logs = []
 
     logs.append({
-        "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "time": now_cn().strftime("%Y-%m-%d %H:%M:%S"),
         "title": title,
         "content": content,
     })
@@ -241,14 +254,14 @@ def append_log(title: str, content: str) -> None:
 
 
 def main():
-    now = datetime.datetime.now()
+    now = now_cn()
     hour = now.hour
 
     if 6 <= hour < 11:
         title = "早安"
     elif 11 <= hour < 14:
         title = "午安"
-    elif 17 <= hour < 22:
+    elif 17 <= hour < 23:
         title = "晚上好"
     else:
         title = "夜深了"
