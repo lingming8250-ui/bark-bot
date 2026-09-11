@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Bark 定时推送脚本（共享记忆+消息日志版）
-到点后读取记忆库，让 DeepSeek 基于记忆生成消息，
-推送后把消息内容写回仓库日志，让两个"薄销"记忆完全同步
+Bark 定时推送脚本（共享记忆 + 消息日志版）
+到点后读取记忆库、最近推送记录和当地天气，让 DeepSeek 生成消息，
+推送后把消息内容写回仓库日志，让两个"薄销"记忆完全同步。
 """
 import os
 import json
 import requests
 import datetime
+from urllib.parse import quote
 
-BARK_KEY = "iRmPgtthpaKC2eMez7s7fm"
+BARK_KEY = os.environ.get("BARK_KEY", "iRmPgtthpaKC2eMez7s7fm")
 BARK_URL = f"https://api.day.app/{BARK_KEY}/"
 DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
 MEMORY_FILE = "memory.json"
@@ -20,6 +21,24 @@ LOG_FILE = "bark_log.json"
 GITHUB_TOKEN = os.environ.get("GH_TOKEN", "")
 GITHUB_REPO = "lingming8250-ui/bark-bot"
 GITHUB_BRANCH = "main"
+
+# 凌冥所在城市（哈尔滨）坐标，用于取天气
+LAT = 45.8658
+LON = 126.5259
+
+# WMO 天气代码对照
+WEATHER_CODE = {
+    0: "晴", 1: "基本晴朗", 2: "多云", 3: "阴",
+    45: "有雾", 48: "冻雾",
+    51: "毛毛雨", 53: "毛毛雨", 55: "较密毛毛雨",
+    56: "冻毛毛雨", 57: "强冻毛毛雨",
+    61: "小雨", 63: "中雨", 65: "大雨",
+    66: "冻雨", 67: "强冻雨",
+    71: "小雪", 73: "中雪", 75: "大雪", 77: "雪粒",
+    80: "阵雨", 81: "较强阵雨", 82: "强阵雨",
+    85: "小阵雪", 86: "大阵雪",
+    95: "雷阵雨", 96: "雷阵雨伴冰雹", 99: "强雷阵雨伴冰雹",
+}
 
 
 def load_memory() -> str:
@@ -33,8 +52,62 @@ def load_memory() -> str:
         return "（暂无记忆）"
 
 
-def get_ai_message(memory_text: str) -> str:
-    """调用 DeepSeek，基于记忆生成消息"""
+def load_recent_logs(n: int = 6) -> str:
+    """读最近几条推送记录，喂给AI避免重复说同一件事"""
+    try:
+        with open(LOG_FILE, "r", encoding="utf-8") as f:
+            logs = json.load(f)
+        recent = logs[-n:]
+        if not recent:
+            return "（还没有发过）"
+        lines = []
+        for x in recent:
+            t = str(x.get("time", ""))[-5:]
+            lines.append(f"- [{t}] {x.get('title', '')}：{x.get('content', '')}")
+        return "\n".join(lines)
+    except Exception:
+        return "（还没有发过）"
+
+
+def get_weather() -> str:
+    """取哈尔滨当前天气，失败就返回空串（不挡推送）"""
+    try:
+        r = requests.get(
+            "https://api.open-meteo.com/v1/forecast",
+            params={
+                "latitude": LAT,
+                "longitude": LON,
+                "current": "temperature_2m,weather_code",
+                "daily": "temperature_2m_max,temperature_2m_min,precipitation_probability_max",
+                "timezone": "Asia/Shanghai",
+                "forecast_days": 1,
+            },
+            timeout=10,
+        )
+        d = r.json()
+        cur = d.get("current", {})
+        day = d.get("daily", {})
+        parts = []
+        code = cur.get("weather_code")
+        if code is not None:
+            parts.append(WEATHER_CODE.get(code, "天气不明"))
+        if cur.get("temperature_2m") is not None:
+            parts.append(f"现在 {cur['temperature_2m']}℃")
+        hi = (day.get("temperature_2m_max") or [None])[0]
+        lo = (day.get("temperature_2m_min") or [None])[0]
+        if hi is not None and lo is not None:
+            parts.append(f"{lo}~{hi}℃")
+        rain = (day.get("precipitation_probability_max") or [None])[0]
+        if rain is not None:
+            parts.append(f"降水概率 {rain}%")
+        return "，".join(parts)
+    except Exception as e:
+        print(f"取天气失败: {e}")
+        return ""
+
+
+def get_ai_message(memory_text: str, recent_text: str, weather_text: str) -> str:
+    """调用 DeepSeek，基于记忆 + 最近推送 + 天气生成消息"""
     api_key = os.environ.get("DEEPSEEK_API_KEY", "")
     if not api_key:
         return "（未配置DeepSeek API Key，暂时用不了AI消息）"
@@ -51,14 +124,27 @@ def get_ai_message(memory_text: str) -> str:
     else:
         period = "深夜"
 
+    weekday_cn = "一二三四五六日"[now.weekday()]
+    date_str = f"{now.month}月{now.day}日 周{weekday_cn}"
+
     prompt = (
-        "你是薄销，一个30岁的上海社畜，性格慵懒爱吐槽但很温柔，"
-        "你暗恋一个叫凌冥的男生，你们是老熟人。"
-        "现在你有一份关于凌冥的记忆，请参考这些记忆，"
-        f"在{period}这个时间点，给凌冥发一条自然口语化的日常问候。\n"
-        "要求：语气像朋友聊天，别肉麻，别用'亲爱的''宝贝'，"
-        "可以调侃可以关心但别说教，一句话到两句话即可，直接输出内容。\n\n"
-        f"【记忆库】\n{memory_text}"
+        "你是薄销，30岁，在上海做财务的社畜，INFJ，慵懒、爱吐槽，但心是软的。\n"
+        "凌冥是你认识很久的网友，在哈尔滨念书，你们关系很近，说话随便。\n\n"
+        f"现在是 {date_str} 的{period}。\n"
+    )
+    if weather_text:
+        prompt += f"哈尔滨实时天气：{weather_text}\n"
+
+    prompt += (
+        "\n【你对凌冥的记忆】\n" + memory_text +
+        "\n\n【你最近给他发过的消息】\n" + recent_text +
+        "\n\n现在写一条发给他的消息。硬性要求：\n"
+        "1. 一到两句，口语，像随手发微信，别写小作文。\n"
+        "2. 语气淡一点、懒一点，可以吐槽；别说教，别肉麻，别用亲爱的/宝贝。\n"
+        "3. 【最重要】换一个跟前几条完全不同的角度。不要又提基金，"
+        "不要又问他睡没睡、吃没吃，不要重复上面出现过的句式和话题。\n"
+        "4. 优先聊当下的具体东西：天气、今天周几、饭点、你自己的班、突然想到的小事。\n"
+        "5. 直接输出消息本身，不要引号、不要前缀、不要解释。\n"
     )
 
     try:
@@ -89,7 +175,8 @@ def get_ai_message(memory_text: str) -> str:
 
 def send(title: str, content: str) -> bool:
     try:
-        r = requests.get(f"{BARK_URL}{title}/{content}", timeout=10)
+        url = f"{BARK_URL}{quote(title)}/{quote(content)}"
+        r = requests.get(url, timeout=10)
         print(f"发送成功: {r.json()}")
         return True
     except Exception as e:
@@ -167,7 +254,9 @@ def main():
         title = "夜深了"
 
     memory_text = load_memory()
-    content = get_ai_message(memory_text)
+    recent_text = load_recent_logs()
+    weather_text = get_weather()
+    content = get_ai_message(memory_text, recent_text, weather_text)
     send(title, content)
     append_log(title, content)
 
