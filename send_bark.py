@@ -26,7 +26,7 @@ BARK_URL = f"https://api.day.app/{BARK_KEY}/"
 # 网关内部会注入薄销的人设与 Supabase 记忆，这里不用再拼人设 prompt。
 GATEWAY_URL = os.environ.get(
     "GATEWAY_URL",
-    "http://obbrbrcj87qecpprlsvahthl.70.39.198.103.sslip.io/v1/chat/completions",
+    "https://gw.lingmingboxiao.com/v1/chat/completions",
 )
 GATEWAY_SECRET = os.environ.get("GATEWAY_SECRET", "")
 
