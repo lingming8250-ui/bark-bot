@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Bark 定时推送脚本（共享记忆 + 消息日志版）
-到点后读取记忆库、最近推送记录和当地天气，让 DeepSeek 生成消息，
-推送后把消息内容写回仓库日志，让两个"薄销"记忆完全同步。
+Bark 定时推送脚本（接新网关版）
+到点后读取最近推送记录和当地天气，让「新网关(wang-guan-open)」生成消息，
+推送后把消息内容写回仓库日志。网关背后接 Supabase 全套记忆，
+因此 Bark 推送与 QQ 聊天共用同一个薄销、同一套记忆。
 
 注意：GitHub Actions 的 runner 时区是 UTC，
 而用户在国内（UTC+8），所以一律用 CN_TZ 取当前时间。
@@ -20,8 +21,15 @@ CN_TZ = timezone(timedelta(hours=8))
 
 BARK_KEY = os.environ.get("BARK_KEY", "iRmPgtthpaKC2eMez7s7fm")
 BARK_URL = f"https://api.day.app/{BARK_KEY}/"
-DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
-MEMORY_FILE = "memory.json"
+
+# 新网关（wang-guan-open）地址与密钥。走 OpenAI 兼容接口 /v1/chat/completions。
+# 网关内部会注入薄销的人设与 Supabase 记忆，这里不用再拼人设 prompt。
+GATEWAY_URL = os.environ.get(
+    "GATEWAY_URL",
+    "http://obbrbrcj87qecpprlsvahthl.70.39.198.103.sslip.io/v1/chat/completions",
+)
+GATEWAY_SECRET = os.environ.get("GATEWAY_SECRET", "")
+
 LOG_FILE = "bark_log.json"
 
 # GitHub 配置（用于写回日志）
@@ -51,17 +59,6 @@ WEATHER_CODE = {
 def now_cn():
     """当前北京时间"""
     return datetime.datetime.now(CN_TZ)
-
-
-def load_memory() -> str:
-    """读取记忆库，转成文本给AI当背景"""
-    try:
-        with open(MEMORY_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return json.dumps(data, ensure_ascii=False, indent=2)
-    except Exception as e:
-        print(f"读取记忆库失败: {e}")
-        return "（暂无记忆）"
 
 
 def load_recent_logs(n: int = 6) -> str:
@@ -118,11 +115,10 @@ def get_weather() -> str:
         return ""
 
 
-def get_ai_message(memory_text: str, recent_text: str, weather_text: str) -> str:
-    """调用 DeepSeek，基于记忆 + 最近推送 + 天气生成消息"""
-    api_key = os.environ.get("DEEPSEEK_API_KEY", "")
-    if not api_key:
-        return "（未配置DeepSeek API Key，暂时用不了AI消息）"
+def get_ai_message(recent_text: str, weather_text: str) -> str:
+    """调用新网关生成消息。网关会自动注入薄销人设与 Supabase 记忆。"""
+    if not GATEWAY_SECRET:
+        return "（未配置 GATEWAY_SECRET，暂时连不上网关）"
 
     now = now_cn()
     hour = now.hour
@@ -139,51 +135,45 @@ def get_ai_message(memory_text: str, recent_text: str, weather_text: str) -> str
     weekday_cn = "一二三四五六日"[now.weekday()]
     date_str = f"{now.month}月{now.day}日 周{weekday_cn}"
 
-    prompt = (
-        "你是薄销，30岁，在上海做财务的社畜，INFJ，慵懒、爱吐槽，但心是软的。\n"
-        "凌冥是你认识很久的网友，在哈尔滨念书，你们关系很近，说话随便。\n\n"
-        f"现在是 {date_str} 的{period}（北京时间 {now.strftime('%H:%M')}）。\n"
+    task = (
+        f"（系统定时触发：现在是 {date_str} 的{period}，北京时间 {now.strftime('%H:%M')}）\n"
     )
     if weather_text:
-        prompt += f"哈尔滨实时天气：{weather_text}\n"
-
-    prompt += (
-        "\n【你对凌冥的记忆】\n" + memory_text +
-        "\n\n【你最近给他发过的消息】\n" + recent_text +
-        "\n\n现在写一条发给他的消息。硬性要求：\n"
+        task += f"哈尔滨实时天气：{weather_text}\n"
+    task += (
+        "\n你最近给凌冥发过的推送：\n" + recent_text +
+        "\n\n现在主动通过 Bark 给凌冥发一条消息。硬性要求：\n"
         "1. 一到两句，口语，像随手发微信，别写小作文。\n"
-        "2. 语气淡一点、懒一点，可以吐槽；别说教，别肉麻，别用亲爱的/宝贝。\n"
-        "3. 【最重要】换一个跟前几条完全不同的角度。不要又提基金，"
-        "不要又问他睡没睡、吃没吃，不要重复上面出现过的句式和话题。\n"
-        "4. 优先聊当下的具体东西：天气、今天周几、饭点、你自己的班、突然想到的小事。\n"
-        "5. 注意时间对不对得上：早上别说"早点睡"，深夜别说"起床了"。\n"
-        "6. 直接输出消息本身，不要引号、不要前缀、不要解释。\n"
+        "2. 语气淡一点、懒一点，可以吐槽；别说教，别肉麻。\n"
+        "3. 换一个跟前几条完全不同的角度，别重复话题和句式。\n"
+        "4. 优先聊当下具体的事：天气、今天周几、饭点、你自己的班、突然想到的小事。\n"
+        "5. 注意时间对得上：早上别说早点睡，深夜别说起床。\n"
+        "6. 直接输出消息本身，不要引号、不要前缀、不要解释。"
     )
 
     try:
         r = requests.post(
-            DEEPSEEK_API_URL,
+            GATEWAY_URL,
             headers={
-                "Authorization": f"Bearer {api_key}",
+                "Authorization": f"Bearer {GATEWAY_SECRET}",
                 "Content-Type": "application/json",
             },
             json={
-                "model": "deepseek-chat",
                 "messages": [
-                    {"role": "system", "content": prompt},
-                    {"role": "user", "content": "给凌冥发一条消息吧"},
+                    {"role": "user", "content": task},
                 ],
-                "max_tokens": 150,
+                "max_tokens": 200,
                 "temperature": 1.0,
+                "stream": False,
             },
-            timeout=30,
+            timeout=60,
         )
         r.raise_for_status()
         data = r.json()
         return data["choices"][0]["message"]["content"].strip()
     except Exception as e:
-        print(f"调用DeepSeek失败: {e}")
-        return "今天AI脑子瓦特了，先手动给你说句：记得喝水。"
+        print(f"调用网关失败: {e}")
+        return "今天脑子瓦特了，先手动给你说句：记得喝水。"
 
 
 def send(title: str, content: str) -> bool:
@@ -198,7 +188,7 @@ def send(title: str, content: str) -> bool:
 
 
 def append_log(title: str, content: str) -> None:
-    """把这次推送的内容追加到仓库日志，让两个薄销共享"""
+    """把这次推送的内容追加到仓库日志"""
     if not GITHUB_TOKEN:
         print("未配置GH_TOKEN，跳过日志写入")
         return
@@ -266,10 +256,9 @@ def main():
     else:
         title = "夜深了"
 
-    memory_text = load_memory()
     recent_text = load_recent_logs()
     weather_text = get_weather()
-    content = get_ai_message(memory_text, recent_text, weather_text)
+    content = get_ai_message(recent_text, weather_text)
     send(title, content)
     append_log(title, content)
 
