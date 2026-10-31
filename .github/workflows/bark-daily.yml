@@ -23,4 +23,8 @@ jobs:
         run: pip install requests
 
       - name: 发送Bark推送
+        env:
+          GATEWAY_SECRET: ${{ secrets.GATEWAY_SECRET }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: python send_bark.py
+
